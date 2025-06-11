@@ -1,54 +1,81 @@
-#!/usr/bin/env python3
-import subprocess, shutil, sys, os
+import nmap
+from logs import salvar_txt
 from datetime import datetime
-import re
 
-# Importa a função de log do outro script (assumindo que está em 'logs.py')
-from logs import salvar_log
+scanner = nmap.PortScanner(nmap_search_path=("C:\\Program Files (x86)\\Nmap\\nmap.exe",)) #localizar nmap
 
-def extrair_info_nmap(saida):
-    linhas = saida.splitlines()
-    ip = so = "desconhecido"
-    servicos = []
+# -sS = scan steath
+# -sV = sevice version
+# -O = operational system
+# -Pn = deactivate host discovery
+# --osscan-guess = supor OS
+# --version-light = fast service detection
+# --max-retries = self-explain
+# --host-timeout = self-explain
 
-    for linha in linhas:
-        if linha.startswith("Nmap scan report for"):
-            ip_match = re.search(r"\(([\d.]+)\)", linha)
-            ip = ip_match.group(1) if ip_match else linha.split()[-1]
-        elif linha.startswith("PORT") and "SERVICE" in linha:
-            idx = linhas.index(linha) + 1
-            while idx < len(linhas) and linhas[idx] and "open" in linhas[idx]:
-                servicos.append(linhas[idx].strip())
-                idx += 1
-        elif "OS details:" in linha:
-            so = linha.split(":", 1)[1].strip()
-        elif "Running:" in linha and so == "desconhecido":
-            so = linha.split(":", 1)[1].strip()
+def varredura_ot(ip):
+    print(f"Varredura OT iniciada em {ip}")
+    scanner.scan(ip, arguments='-sS -sV --version-light -O --osscan-guess -Pn --max-retries 2 --host-timeout 30s') #
+    return scanner.all_hosts()
 
-    return ip, so, servicos
+def varredura_iot(ip):
+    print(f"Varredura IoT iniciada em {ip}")
+    scanner.scan(ip, arguments='-sS -sV -O --osscan-guess -Pn')
+    return scanner.all_hosts()
 
-def main():
-    target = input("Alvo (IP ou domínio): ").strip()
-    if not target:
-        print("Nenhum alvo informado.")
-        return
+def varredura_ti(ip):
+    print(f"Varredura TI iniciada em {ip}")
+    scanner.scan(ip, arguments='-Pn -sS -sV -O --osscan-guess')
+    return scanner.all_hosts()
 
-    nmap_exe = shutil.which("nmap") or r"C:\Program Files\Nmap\nmap.exe"
-    if not os.path.exists(nmap_exe):
-        print("Nmap não encontrado. Ajuste o caminho em nmap_exe.")
-        sys.exit(1)
-
-    cmd = [nmap_exe, "-sS", "-T4", "-O", target]
+def varredura_completa(ip, tipo):
     try:
-        resultado = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        ip, so, servicos = extrair_info_nmap(resultado.stdout)
-
-        # Chamada do log 
-        salvar_log(device=target, ip=ip, so=so, servicos=servicos)
-
-        print("Scan completo. Log salvo.")
-    except subprocess.CalledProcessError as e:
-        print(f"Erro ao executar Nmap: {e}")
+        if tipo == "OT":
+            hosts = varredura_ot(ip)
+        elif tipo == "IoT":
+            hosts = varredura_iot(ip)
+        elif tipo == "TI":
+            hosts = varredura_ti(ip)
+        else:
+            print("Tipo de dispositivo desconhecido. Realizando varredura genérica.")
+            scanner.scan(ip, arguments='-Pn -p 1-1024 -sV')
+            hosts = scanner.all_hosts()
+        return hosts
+    except Exception as e:
+        return f"Erro na varredura: {e}"
 
 if __name__ == "__main__":
-    main()
+    ip = input("IP ou rede (ex: 192.168.0.0/24): ")
+    tipo = input("Tipo de dispositivo (OT, IoT, TI): ")
+
+    try:
+        resultado = varredura_completa(ip, tipo)
+
+        print("\n    Resultado da Varredura    ")
+        if isinstance(resultado, list):
+            for host in resultado:
+                print(f"\nHost: {host}")
+                servicos = []
+                so = "não identificado"
+
+                if 'tcp' in scanner[host]:
+                    for porta in scanner[host]['tcp']:
+                        info = scanner[host]['tcp'][porta]
+                        nome_servico = f"{info['name']} {info.get('product', '')} {info.get('version', '')}".strip()
+                        servicos.append(f"{porta}/tcp -> {nome_servico}")
+                        print(f"Porta {porta}/tcp -> {nome_servico}")
+
+                if 'osmatch' in scanner[host] and scanner[host]['osmatch']:
+                    so = scanner[host]['osmatch'][0]['name']
+                    print(f"Sistema Operacional: {so} (Acurácia: {scanner[host]['osmatch'][0]['accuracy']}%)")
+                else:
+                    print("Sistema Operacional: não identificado")
+
+                # Salvar log
+                salvar_txt(device=tipo, ip=host, so=so, servicos=servicos)
+
+            print("\nScan completo. Log TXT salvo.")
+        else:
+            print(resultado)
+    except Exception as e:
+        print(f"Erro ao executar varredura: {e}")
